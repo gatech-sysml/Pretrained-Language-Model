@@ -28,7 +28,7 @@ import numpy as np
 import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler, TensorDataset)
 from tqdm import tqdm
-
+import sklearn
 from transformers import (BertConfig,
                                   BertForSequenceClassification, BertTokenizer,
                                   RobertaConfig,
@@ -42,7 +42,7 @@ from transformers import glue_processors as processors
 from transformers import glue_convert_examples_to_features as convert_examples_to_features
 
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 
 class InputFeatures(object):
@@ -77,7 +77,8 @@ def convert_examples_to_features_test(examples, label_list, max_seq_length,
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
+            pass
+            # logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         tokens_a = tokenizer.tokenize(example.text_a)
 
@@ -119,16 +120,17 @@ def convert_examples_to_features_test(examples, label_list, max_seq_length,
             label_id = 0
 
         if ex_index < 1:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(example.label))
-            logger.info("label_id: {}".format(label_id))
+            # logger.info("*** Example ***")
+            # logger.info("guid: %s" % (example.guid))
+            # logger.info("tokens: %s" % " ".join(
+            #     [str(x) for x in tokens]))
+            # logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+            # logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            # logger.info(
+            #     "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            # logger.info("label: {}".format(example.label))
+            # logger.info("label_id: {}".format(label_id))
+            pass
 
         features.append(
             InputFeatures(input_ids=input_ids,
@@ -156,9 +158,9 @@ def set_seed(args):
 def evaluate(args, model, tokenizer, prefix=""):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
     eval_task_names = ("mnli", "mnli-mm") if args.task_name == "mnli" else (args.task_name,)
-
     results = {}
     for eval_task in eval_task_names:
+        running_time = []
         eval_dataset = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True)
 
         eval_output_dir = os.path.join(args.output_dir,
@@ -172,9 +174,9 @@ def evaluate(args, model, tokenizer, prefix=""):
         eval_sampler = SequentialSampler(eval_dataset)
         eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
-        logger.info("***** Running evaluation {} *****".format(prefix))
-        logger.info("  Num examples = %d", len(eval_dataset))
-        logger.info("  Batch size = %d", args.eval_batch_size)
+        # logger.info("***** Running evaluation {} *****".format(prefix))
+        # logger.info("  Num examples = %d", len(eval_dataset))
+        # logger.info("  Batch size = %d", args.eval_batch_size)
         eval_loss = 0.0
         nb_eval_steps = 0
         preds = None
@@ -190,8 +192,16 @@ def evaluate(args, model, tokenizer, prefix=""):
                 if args.model_type != 'distilbert':
                     inputs['token_type_ids'] = batch[2] if args.model_type in ['bert', 'xlnet'] else None  # XLM, DistilBERT and RoBERTa don't use segment_ids
                 # the following print function is to output original sentence for the visualization, wrt. batch_size=1
-                print(tokenizer.decode(inputs['input_ids'][0].cpu().numpy()))
+                # print(tokenizer.decode(inputs['input_ids'][0].cpu().numpy()))
+                st, et = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                st.record()
                 outputs = model(**inputs)
+                et.record()
+                # sync GPU
+                torch.cuda.synchronize()
+                # measure elapsed time
+                inft = st.elapsed_time(et)
+                running_time.append(inft)
                 tmp_eval_loss, logits = outputs[:2]
 
                 eval_loss += tmp_eval_loss.mean().item()
@@ -213,12 +223,17 @@ def evaluate(args, model, tokenizer, prefix=""):
         else:
             results.update(result)
 
-        output_eval_file = os.path.join(eval_output_dir, "eval_results_{0}.txt".format(eval_task))
+
+
+        output_eval_file = os.path.join("eval_results_SST2_pareto.txt".format(eval_task))
         with open(output_eval_file, "a") as writer:
-            logger.info("***** Eval results {} *****".format(prefix))
+            print("***** Eval results {} *****".format(prefix))
             for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
+                print("  %s = %s", key, str(result[key]))
+                writer.write("Depth: {}\t Width: {}\n".format(args.depth_mult, args.width_mult))
+                writer.write("Accuracy = {} \t Latency: {}\n".format(str(result[key]), np.mean(running_time)))
+                writer.write("----------------------------------------------------\n")
+                writer.write("----------------------------------------------------\n")
             writer.write("\n")
     return results
 
@@ -257,7 +272,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
     processor = processors[task]()
     output_mode = output_modes[task]
 
-    logger.info("Creating features from dataset file at %s", args.data_dir)
+    # logger.info("Creating features from dataset file at %s", args.data_dir)
     label_list = processor.get_labels()
     if task in ['mnli', 'mnli-mm'] and args.model_type in ['roberta']:
         # HACK(label indices are swapped in RoBERTa pretrained model)
@@ -327,7 +342,7 @@ def main():
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt = '%m/%d/%Y %H:%M:%S',
                         level = logging.INFO)
-    logger.warning("device: %s, n_gpu: %s", device, args.n_gpu, )
+    # logger.warning("device: %s, n_gpu: %s", device, args.n_gpu, )
 
     # Set seed
     set_seed(args)
