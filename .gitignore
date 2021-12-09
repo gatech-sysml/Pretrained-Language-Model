@@ -1,0 +1,8 @@
+*__pycache__*
+glue_data/
+DATA/
+DynaBERT/dynabert/
+DynaBERT/glue/
+DynaBERT_hf410/glue/
+DynaBERT_hf410/dynabert/
+DynaBERT_hf410_bak/
