@@ -252,10 +252,8 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
                                             label_list=label_list,
                                             max_length=args.max_seq_length,
                                             output_mode=output_mode,
-                                            pad_on_left=bool(args.model_type in ['xlnet']),                 # pad on the left for xlnet
-                                            pad_token=tokenizer.convert_tokens_to_ids([tokenizer.pad_token])[0],
-                                            pad_token_segment_id=4 if args.model_type in ['xlnet'] else 0,
-    )
+                                            task=task)
+
 
     # Convert to Tensors and build dataset
     all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
@@ -338,6 +336,7 @@ def main():
     max_len = 12
     max_arat = 12
 
+    import pdb; pdb.set_trace()
     for depth_mult in [1, 0.75, 0.5]:
         for width_mult in [1, 0.75, 0.5, 0.25]:
             model.apply(lambda m: setattr(m, 'depth_mult', float(depth_mult)))
@@ -348,6 +347,8 @@ def main():
                 depth = max_len * depth_mult
                 attention_size = max_arat * width_mult
                 H_dim = 64*attention_size
+
+                print("{} {} {}".format(depth_mult, width_mult, trial_latencies))
 
                 pareto_curve[name.format(depth, H_dim, attention_size)] = np.mean(all_latencies[1:])
 
