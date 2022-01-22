@@ -338,11 +338,12 @@ def main():
     max_len = 12
     max_arat = 12
 
-    for depth_mult in [1, 0.75, 0.5]:
-        for width_mult in [1, 0.75, 0.5, 0.25]:
-            model.apply(lambda m: setattr(m, 'depth_mult', float(depth_mult)))
-            model.apply(lambda m: setattr(m, 'width_mult', float(width_mult)))
-            for batch_size in [128]:
+    model_latencies = {}
+    for batch_size in [1, 4, 16, 64, 128]:
+        for depth_mult in [1, 0.75, 0.5]:
+            for width_mult in [1, 0.75, 0.5, 0.25]:
+                model.apply(lambda m: setattr(m, 'depth_mult', float(depth_mult)))
+                model.apply(lambda m: setattr(m, 'width_mult', float(width_mult)))
                 all_latencies = []
                 depth = max_len * depth_mult
                 attention_size = max_arat * width_mult
@@ -352,7 +353,10 @@ def main():
                     all_latencies.append(trial_latencies)
 
                 all_latencies = np.array(all_latencies)
-                pareto_curve[name.format(depth, H_dim, attention_size)] = np.mean(all_latencies[:, 1:])
+                model_latencies[name.format(depth, H_dim, attention_size)] = all_latencies
+
+        import pickle
+        pickle.dump(model_latencies, open('latencies/dynaberthf211_elastic_latencies_bs={}.pkl'.format(batch_size), 'wb'))
 
 
     import ipdb; ipdb.set_trace()
