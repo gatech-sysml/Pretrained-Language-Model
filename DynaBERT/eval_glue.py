@@ -28,7 +28,7 @@ import numpy as np
 import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler, TensorDataset)
 from tqdm import tqdm
-
+import sklearn
 from transformers import (BertConfig,
                                   BertForSequenceClassification, BertTokenizer,
                                   RobertaConfig,
@@ -40,10 +40,6 @@ from transformers import glue_compute_metrics as compute_metrics
 from transformers import glue_output_modes as output_modes
 from transformers import glue_processors as processors
 from transformers import glue_convert_examples_to_features as convert_examples_to_features
-
-
-logger = logging.getLogger(__name__)
-
 
 class InputFeatures(object):
     """A single set of features of data."""
@@ -77,7 +73,8 @@ def convert_examples_to_features_test(examples, label_list, max_seq_length,
     features = []
     for (ex_index, example) in enumerate(examples):
         if ex_index % 10000 == 0:
-            logger.info("Writing example %d of %d" % (ex_index, len(examples)))
+            pass
+            # logger.info("Writing example %d of %d" % (ex_index, len(examples)))
 
         tokens_a = tokenizer.tokenize(example.text_a)
 
@@ -119,16 +116,17 @@ def convert_examples_to_features_test(examples, label_list, max_seq_length,
             label_id = 0
 
         if ex_index < 1:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: {}".format(example.label))
-            logger.info("label_id: {}".format(label_id))
+            # logger.info("*** Example ***")
+            # logger.info("guid: %s" % (example.guid))
+            # logger.info("tokens: %s" % " ".join(
+            #     [str(x) for x in tokens]))
+            # logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+            # logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+            # logger.info(
+            #     "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+            # logger.info("label: {}".format(example.label))
+            # logger.info("label_id: {}".format(label_id))
+            pass
 
         features.append(
             InputFeatures(input_ids=input_ids,
@@ -153,28 +151,30 @@ def set_seed(args):
         torch.cuda.manual_seed_all(args.seed)
 
 
-def evaluate(args, model, tokenizer, prefix=""):
+def evaluate(args, model, tokenizer, batch_size, prefix=""):
     # Loop to handle MNLI double evaluation (matched, mis-matched)
     eval_task_names = ("mnli", "mnli-mm") if args.task_name == "mnli" else (args.task_name,)
-
     results = {}
+    model_latencies = []
     for eval_task in eval_task_names:
+        running_time = []
         eval_dataset = load_and_cache_examples(args, eval_task, tokenizer, evaluate=True)
 
         eval_output_dir = os.path.join(args.output_dir,
-                                       args.model_type + '_' + args.width_mult + '_' + args.depth_mult + '_eval')
+                                    args.model_type + '_' + args.width_mult + '_' + args.depth_mult + '_eval')
         if not os.path.exists(eval_output_dir):
                 # and args.local_rank in [-1, 0]:
             os.makedirs(eval_output_dir)
 
-        args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+        # args.eval_batch_size = args.per_gpu_eval_batch_size * max(1, args.n_gpu)
+        args.eval_batch_size = batch_size
         # Note that DistributedSampler samples randomly
         eval_sampler = SequentialSampler(eval_dataset)
-        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=args.eval_batch_size)
+        eval_dataloader = DataLoader(eval_dataset, sampler=eval_sampler, batch_size=batch_size)
 
-        logger.info("***** Running evaluation {} *****".format(prefix))
-        logger.info("  Num examples = %d", len(eval_dataset))
-        logger.info("  Batch size = %d", args.eval_batch_size)
+        # logger.info("***** Running evaluation {} *****".format(prefix))
+        # logger.info("  Num examples = %d", len(eval_dataset))
+        # logger.info("  Batch size = %d", args.eval_batch_size)
         eval_loss = 0.0
         nb_eval_steps = 0
         preds = None
@@ -183,44 +183,27 @@ def evaluate(args, model, tokenizer, prefix=""):
             model.eval()
             batch = tuple(t.to(args.device) for t in batch)
 
+            print(batch[0].shape)
             with torch.no_grad():
                 inputs = {'input_ids':      batch[0],
-                          'attention_mask': batch[1],
-                          'labels':         batch[3]}
+                        'attention_mask': batch[1],
+                        'labels':         batch[3]}
                 if args.model_type != 'distilbert':
                     inputs['token_type_ids'] = batch[2] if args.model_type in ['bert', 'xlnet'] else None  # XLM, DistilBERT and RoBERTa don't use segment_ids
                 # the following print function is to output original sentence for the visualization, wrt. batch_size=1
-                print(tokenizer.decode(inputs['input_ids'][0].cpu().numpy()))
+                # print(tokenizer.decode(inputs['input_ids'][0].cpu().numpy()))
+                st, et = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                st.record()
                 outputs = model(**inputs)
-                tmp_eval_loss, logits = outputs[:2]
+                et.record()
+                # sync GPU
+                torch.cuda.synchronize()
+                # measure elapsed time
+                inft = st.elapsed_time(et)
+                model_latencies.append(inft)
 
-                eval_loss += tmp_eval_loss.mean().item()
-            nb_eval_steps += 1
-            if preds is None:
-                preds = logits.detach().cpu().numpy()
-                out_label_ids = inputs['labels'].detach().cpu().numpy()
-            else:
-                preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
-                out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
 
-        if args.output_mode == "classification":
-            preds = np.argmax(preds, axis=1)
-        elif args.output_mode == "regression":
-            preds = np.squeeze(preds)
-        result = compute_metrics(eval_task, preds, out_label_ids)
-        if eval_task == 'mnli-mm':
-            results.update({'acc_mm':result['acc']})
-        else:
-            results.update(result)
-
-        output_eval_file = os.path.join(eval_output_dir, "eval_results_{0}.txt".format(eval_task))
-        with open(output_eval_file, "a") as writer:
-            logger.info("***** Eval results {} *****".format(prefix))
-            for key in sorted(result.keys()):
-                logger.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
-            writer.write("\n")
-    return results
+    return None, model_latencies
 
 
 def get_tensor_data(output_mode, features):
@@ -257,7 +240,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
     processor = processors[task]()
     output_mode = output_modes[task]
 
-    logger.info("Creating features from dataset file at %s", args.data_dir)
+    # logger.info("Creating features from dataset file at %s", args.data_dir)
     label_list = processor.get_labels()
     if task in ['mnli', 'mnli-mm'] and args.model_type in ['roberta']:
         # HACK(label indices are swapped in RoBERTa pretrained model)
@@ -299,13 +282,13 @@ def main():
                         help="The name of the task to train selected in the list: " + ", ".join(processors.keys()))
     parser.add_argument("--output_dir", default=None, type=str, required=True,
                         help="The output directory where the model predictions will be written.")
-    parser.add_argument("--max_seq_length", default=128, type=int,
+    parser.add_argument("--max_seq_length", default=55, type=int,
                         help="The maximum total input sequence length after tokenization. Sequences longer "
                              "than this will be truncated, sequences shorter will be padded.")
     parser.add_argument("--do_lower_case", default=True,
                         help="Set this flag if you are using an uncased model.")
-    parser.add_argument("--per_gpu_eval_batch_size", default=128, type=int,
-                        help="Batch size per GPU/CPU for evaluation.")
+    # parser.add_argument("--per_gpu_eval_batch_size", default=128, type=int,
+    #                     help="Batch size per GPU/CPU for evaluation.")
     parser.add_argument("--no_cuda", action='store_true',
                         help="Avoid using CUDA when available")
     parser.add_argument('--seed', type=int, default=42,
@@ -327,7 +310,7 @@ def main():
     logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt = '%m/%d/%Y %H:%M:%S',
                         level = logging.INFO)
-    logger.warning("device: %s, n_gpu: %s", device, args.n_gpu, )
+    # logger.warning("device: %s, n_gpu: %s", device, args.n_gpu, )
 
     # Set seed
     set_seed(args)
@@ -346,14 +329,37 @@ def main():
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
 
     config = config_class.from_pretrained(args.model_dir, num_labels=num_labels, finetuning_task=args.task_name)
-    tokenizer = tokenizer_class.from_pretrained(args.model_dir, do_lower_case=args.do_lower_case)
+    tokenizer = tokenizer_class.from_pretrained(args.model_dir, do_lower_case=True)
     model = model_class.from_pretrained(args.model_dir, config=config)
     model.to(args.device)
-    model.apply(lambda m: setattr(m, 'depth_mult', float(args.depth_mult)))
-    model.apply(lambda m: setattr(m, 'width_mult', float(args.width_mult)))
-    results = evaluate(args, model, tokenizer)
-    print(results)
+
+    pareto_curve = {}
+    name = "L={}_H={}_A={}"
+    max_len = 12
+    max_arat = 12
+
+    model_latencies = {}
+    for batch_size in [1, 4, 16, 64, 128]:
+        for depth_mult in [1, 0.75, 0.5]:
+            for width_mult in [1, 0.75, 0.5, 0.25]:
+                model.apply(lambda m: setattr(m, 'depth_mult', float(depth_mult)))
+                model.apply(lambda m: setattr(m, 'width_mult', float(width_mult)))
+                all_latencies = []
+                depth = max_len * depth_mult
+                attention_size = max_arat * width_mult
+                H_dim = 64*attention_size
+                for trial in range(3):
+                    results, trial_latencies = evaluate(args, model, tokenizer, batch_size)
+                    all_latencies.append(trial_latencies)
+
+                all_latencies = np.array(all_latencies)
+                model_latencies[name.format(depth, H_dim, attention_size)] = all_latencies
+
+        import pickle
+        pickle.dump(model_latencies, open('latencies/dynaberthf211_elastic_latencies_bs={}.pkl'.format(batch_size), 'wb'))
 
 
+    import ipdb; ipdb.set_trace()
 if __name__ == "__main__":
     main()
+
